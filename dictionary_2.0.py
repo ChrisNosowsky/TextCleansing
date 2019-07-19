@@ -2,8 +2,7 @@
 #
 #Module used to cleanse text data
 #
-#Created by Chris Nosowsky (6/19/2019)
-#
+#Created by Matt Lauer (5/22/2018)
 
 import collections
 import re
@@ -15,10 +14,10 @@ class Dictionary(object):
     #might have to change for specific version
     _original_correct_dict       = "C:\\Development\\SVN\\Amerisure\\Analytics\\trunk\\TextAnalytics\\common\\f_workers_comp_dictionary.txt"
     _dictionary_to_add = "C:\\Development\\SVN\\Amerisure\\Analytics\\trunk\\TextAnalytics\\common\\dictionary_words_no_dups.txt"
-    _notes_to_add = "C:\\Development\\SVN\\Amerisure\\Analytics\\trunk\\TextAnalytics\\common\\workers_comp_dictionary_freq_p9.txt"   
+    _notes_to_add = "C:\\Development\\SVN\\Amerisure\\Analytics\\trunk\\TextAnalytics\\common\\workers_comp_dictionary_freq_p9.txt"
     _alphabet = 'abcdefghijklmnopqrstuvwxyz'
     
-    #Constructor    
+    #Constructor
     def __init__(self):
         self._original_correct_dict = self.open_sesame(self._original_correct_dict)
         
@@ -41,16 +40,16 @@ class Dictionary(object):
         
     #Accessors
     def get_words(self):
-        return self._original_correct_dict    
-    
-    def find_words(self,text):
+        return self._original_correct_dict
+    @staticmethod
+    def find_words(text):
         return re.findall("[a-z/-]+", text.lower())
     
     def word_probability(self,word,N=0):
         N=sum(self._original_correct_dict.values())
         return self._original_correct_dict[word] / N
-            
-    def open_sesame(self, filename): #function no longer needed
+    @staticmethod
+    def open_sesame(filename):
         model = collections.defaultdict(lambda: 0)
         with open(filename) as f:
             for line in f:
@@ -64,21 +63,22 @@ class Dictionary(object):
         transposes = [a + b[1] + b[0] + b[2:] for a, b in s if len(b)>1]
         replaces   = [a + c + b[1:] for a, b in s if b for c in self._alphabet]
         inserts    = [a + c + b     for a, b in s for c in self._alphabet]
-        return set(deletes + transposes + replaces + inserts)        
+        return set(deletes + transposes + replaces + inserts)
         
-    def edits2(self, word): 
+    def edits2(self, word):
         return (e2 for e1 in self.edits(word) for e2 in self.edits(e1))
         
     def known(self,words):
-        return set(w for w in words if w in self._original_correct_dict)        
+        return set(w for w in words if w in self._original_correct_dict)   
 
     def correct(self,word):
         candidates = self.known([word]) or self.known(self.edits(word)) or self.known(self.edits2(word)) or [word]
-        return max(candidates, key=self.word_probability) 
+        return max(candidates, key=self.word_probability)
   
     #########################################  FUNCTIONS BELOW USED FOR TRANSFORM TXT                               #########################################
-    #########################################  TO DICTIONARY FORMAT THEN ADDING THAT DICTIONARY TO FINAL DICTIONARY #########################################  
-    def train(self, features):
+    #########################################  TO DICTIONARY FORMAT THEN ADDING THAT DICTIONARY TO FINAL DICTIONARY #########################################
+    @staticmethod
+    def train(features):
         '''
         Function just allows to convert notes/text file to a frequency dictionary
         Train function meant for NOTES/TEXT FILE WORD FREQUENCY! NOT 1 FOR ALL
@@ -114,7 +114,8 @@ class Dictionary(object):
             
     ############################################################################################################################################################
     ############################################################################################################################################################
-    def compare(self,words, medwords):
+    @staticmethod
+    def compare(words, medwords):
         '''
         Compares two dictionaries and writes the new model. Do this first before adding if you have notes.
         '''
@@ -126,8 +127,8 @@ class Dictionary(object):
                     model[w] += val
                 val = 0
         return model
-    
-    def writes(self,model): #write function doesn't overwrite dictionaries for version/history retention.
+    @staticmethod
+    def writes(model): #write function doesn't overwrite dictionaries for version/history retention.
         for i in range(10):
             filename = 'C:\\Development\\SVN\\Amerisure\\Analytics\\trunk\\TextAnalytics\\translation\\f_workers_comp_dictionary{}.txt'.format(str(i))
             exists = os.path.isfile(filename)
@@ -146,7 +147,7 @@ def main():
     #1 = update existing dict words
     #0 = don't update any existing words
     d = Dictionary()
-    #d.add(d._add_me_to_final,1)
+    #d.add(d._add_me_to_final,1
     
 
 if __name__ == '__main__':
