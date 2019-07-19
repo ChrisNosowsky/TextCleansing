@@ -5,7 +5,7 @@
 Used for text cleansing.
 
 
-What does this accomplish?
+#### What does this accomplish?
 
 Good question! If you have a .txt or .csv file, you could actually implement it into the dictionary class and run it against the class. It will call a function that takes raw text, and outputs another file that contains all the words that were in the text along with it's frequency
 
