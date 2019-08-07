@@ -1,0 +1,265 @@
+import cx_Oracle
+
+import logging
+
+import random
+
+import runmanager
+from runmanager import AppRunManager
+from runmanager import RunTimes
+
+import textclassifier
+from textclassifier import NaiveBayesClassifier
+
+import textprocessor
+from textprocessor import TextProcessor
+
+import utils
+from utils import Logging
+
+class NoteProcessor(TextProcessor):		
+	
+	#Constructors	
+	def __init__(self,**connect_params):		
+		TextProcessor.__init__(self, "claim_notes", **connect_params)
+		self.set_new_word_file_prefix("G:\\Development\\SVN\\Amerisure\\Analytics\\trunk\\TextAnalytics\\claims\\output\\new_words_claim_notes_")		
+	
+	#Set Functions
+	def set_read_connection(self,**connect_params):		
+		self._read_connect_params = connect_params
+	
+	#Read claim notes data from database
+	def read_notes(self,next_run_times):
+		try:
+			r_notes = []
+			
+			db_conn = cx_Oracle.connect(**self._read_connect_params)
+			notes_csr = db_conn.cursor()
+			
+			#TESTING
+			#notes_csr.execute("select id, claimid, body from awh.cc_note where claimid = 679377")
+			
+			sel_sql_stmt = "SELECT id, claimid, body " + \
+							"FROM awh.cc_note cn " + \
+							"WHERE cn.dr_ins_tmstmp BETWEEN :t_start AND :t_end " + \
+							"AND cn.dr_ins_tmstmp = " + \
+							"( " + \
+							"SELECT MAX(cn2.dr_ins_tmstmp) " + \
+							"FROM awh.cc_note cn2 " + \
+							"WHERE cn.id = cn2.id " + \
+							"AND cn2.dr_ins_tmstmp BETWEEN :t_start AND :t_end " + \
+							")"
+							
+			notes_csr.prepare(sel_sql_stmt)
+			notes_csr.setinputsizes(t_start=cx_Oracle.TIMESTAMP)
+			notes_csr.setinputsizes(t_end=cx_Oracle.TIMESTAMP)			
+			notes_csr.execute(None, {'t_start':next_run_times.start_time,'t_end':next_run_times.end_time})			
+			
+			for id, claimid, body in notes_csr:
+				r_notes.append((id, claimid, body.read().strip()))
+				
+			db_conn.close()
+			
+			return r_notes
+			
+		except Exception as ex:	
+			self.logger.log_error('read_notes(): ' + str(ex))
+			logging.exception(ex)
+			
+	#Write cleansed claim notes back to the database
+	#For now this is to the stage table
+	def write_notes(self,w_notes):
+		try:			
+			db_conn = cx_Oracle.connect(**self.connect_params)
+			notes_csr = db_conn.cursor()
+			
+			try:
+				trn_sql_stmt = "TRUNCATE TABLE ADVAN.CC_NOTE_EXT_STG"
+				notes_csr.execute(trn_sql_stmt)
+				
+				ins_sql_stmt = "INSERT INTO ADVAN.CC_NOTE_EXT_STG(ID,CLAIMID,BODY) VALUES (:1, :2, :3)"
+				notes_csr.prepare(ins_sql_stmt)
+				notes_csr.executemany(None, w_notes)
+				
+				db_conn.commit()
+				
+			except Exception as ex:
+				db_conn.rollback()
+				self.logger.log_error('write_notes(),insert: ' + str(ex))
+				logging.exception(ex)				
+				
+			db_conn.close()			
+			
+		except Exception as ex:	
+			self.logger.log_error('write_notes(): ' + str(ex))
+			logging.exception(ex)
+			
+	#Merge notes in the stage table into the final table
+	#Eventually this might be in a package
+	def merge_notes(self):
+		try:			
+			db_conn = cx_Oracle.connect(**self.connect_params)
+			notes_csr = db_conn.cursor()
+			out_code = notes_csr.var(cx_Oracle.NUMBER)
+			out_msg = notes_csr.var(cx_Oracle.STRING)				
+			
+			notes_csr.callproc("ADVAN.PKG_CLAIM_NOTES.PRC_MERGE_NOTES", [out_code, out_msg])		
+			#****Need code to check out_code and out_msg and throw exception
+			
+			#sql_stmt = """MERGE INTO advan.cc_note_ext cne
+			#			USING (SELECT id, claimid, body FROM advan.cc_note_ext_stg) cnes
+			#			ON (cne.id = cnes.id)
+			#			WHEN MATCHED THEN 
+			#			  UPDATE SET cne.claimid = cnes.claimid,
+			#						 cne.body = cnes.body,
+			#						 cne.update_dt = systimestamp
+			#			WHEN NOT MATCHED THEN 
+			#			  INSERT (cne.id, cne.claimid, cne.body)
+			#			  VALUES (cnes.id, cnes.claimid, cnes.body)"""
+			#notes_csr.execute(sql_stmt)
+			#db_conn.commit()
+
+			db_conn.close()
+			
+		except Exception as ex:	
+			self.logger.log_error('merge_notes(): ' + str(ex))
+			logging.exception(ex)					
+			
+	#Process notes governed by query in read_notes
+	def process_notes(self):
+		try:
+			self.logger.log_start('process_notes()')
+			
+			arm = AppRunManager(**self.connect_params)
+			
+			self.logger.log_start('process_notes(): get next run times')
+			rtms = arm.get_next_run_times(self._app_name)
+			self.logger.log_end('process_notes(): get next run times')			
+			
+			self.logger.log_start('process_notes(): read notes')	
+			notes_in = self.read_notes(rtms)
+			self.logger.log_end('process_notes(): read notes')	
+			
+			notes_out = []
+			
+			self.logger.log_start('process_notes(): process text')			
+			for note in notes_in:
+				note_prcsd = self.process_text(note[2], True, True)
+				notes_out.append((note[0],note[1],note_prcsd))				
+			self.logger.log_end('process_notes(): process text')
+
+			self.logger.log_start('process_notes(): write notes')			
+			self.write_notes(notes_out)
+			self.logger.log_end('process_notes(): write notes')	
+						
+			self.write_new_words()
+			
+			self.logger.log_start('process_notes(): merge notes')
+			self.merge_notes()
+			self.logger.log_end('process_notes(): merge notes')
+		
+			self.logger.log_start('process_notes(): advance run times')
+			arm.advance_run_times(self._app_name)
+			self.logger.log_end('process_notes(): advance run times')			
+		
+			self.logger.log_end('process_notes()')
+			
+		except Exception as ex:	
+			self.logger.log_error('process_notes(): ' + str(ex))
+			logging.exception(ex)
+			
+class NoteClassifier:
+
+	def __init__(self,**connect_params):		
+		self._app_name = 'claim_notes_nb_classify'
+		self.connect_params = connect_params
+		self.logger = Logging(self._app_name,**connect_params)	
+		self._nb_classify = textclassifier.NaiveBayesClassifier()
+		self._test_notes = []
+		self._train_notes = []
+				
+	#Access functions
+	def get_nb_classify(self):
+		return self._nb_classify
+
+	def get_test_notes(self):
+		return self._test_notes	
+
+	def get_train_notes(self):
+		return self._train_notes			
+		
+	#Read claim notes data from database
+	def read_notes(self):
+		try:
+			r_notes = []
+			
+			db_conn = cx_Oracle.connect(**self.connect_params)
+			notes_csr = db_conn.cursor()
+			
+			sql_stmt = "SELECT wpd.plcy_lob_prefx_cd AS plcylob, " + \
+						"cne.id AS noteid, " + \
+						"cne.claimid, " + \
+						"cne.body " + \
+						"FROM advan.cc_note_ext cne " + \
+						"INNER JOIN " + \
+						"( " + \
+						"SELECT DISTINCT ID, claimnumber FROM cc_claim " + \
+						") cc " + \
+						"ON cne.claimid = cc.id " + \
+						"INNER JOIN awh.wr_claim_d wcd " + \
+						"ON cc.claimnumber = wcd.clm_claim_no " + \
+						"INNER JOIN awh.wr_plcy_d wpd " + \
+						"ON wcd.clm_plcy_dim_key = wpd.plcy_dim_key " + \
+						"WHERE wpd.plcy_lob_prefx_cd in ('WC','GL','CA') "
+							
+			notes_csr.execute(sql_stmt)
+			
+			for plcylob, noteid, claimid, body in notes_csr:			
+				if body is not None:
+					r_notes.append((noteid, body.read().strip(), plcylob, claimid))
+				
+			db_conn.close()
+			
+			return r_notes
+			
+		except Exception as ex:	
+			self.logger.log_error('read_notes(): ' + str(ex))
+			logging.exception(ex)
+			
+	#Take notes from the database and create test and training data sets
+	def create_notes_sets(self):
+		try:
+			r_notes = self.read_notes()
+			
+			random.shuffle(r_notes)
+		
+			#Use first third of data set to train the model			
+			split_index = round(len(r_notes) / 3)					
+			self._train_notes = r_notes[:split_index]
+			
+			#Use last two thirds of data set to test the model
+			self._test_notes = r_notes[split_index:]
+			
+		except Exception as ex:	
+			self.logger.log_error('create_notes_sets(): ' + str(ex))
+			logging.exception(ex)
+			
+	#Use the training notes set to train the classifier
+	def analyze_training_set(self):
+		try:
+			self._nb_classify.create_train_set(self._train_notes)
+			self._nb_classify.analyze_train_set()
+		
+		except Exception as ex:	
+			self.logger.log_error('analyze_training_set(): ' + str(ex))
+			logging.exception(ex)
+			
+	#Use the training notes set to train the classifier
+	def check_accuracy(self):
+		try:
+			return self._nb_classify.get_classifier_accuracy(self._test_notes)
+			
+		except Exception as ex:	
+			self.logger.log_error('analyze_training_set(): ' + str(ex))
+			logging.exception(ex)	
+			
